@@ -152,6 +152,20 @@ freeproc(struct proc *p)
   p->state = UNUSED;
 }
 
+uint64
+cnt_free_proc(void) {
+  uint64 cnt = 0;
+  struct proc* p;
+  for (p = proc; p < &proc[NPROC]; p++) {
+    acquire(&p->lock);
+    if (p->state != UNUSED) {
+      cnt++;
+    }
+    release(&p->lock);
+  }
+  return cnt;
+}
+
 // Create a user page table for a given process,
 // with no user memory, but with trampoline pages.
 pagetable_t
@@ -274,6 +288,8 @@ fork(void)
     return -1;
   }
   np->sz = p->sz;
+  // copy mask
+  np->mask = p->mask;
 
   np->parent = p;
 
