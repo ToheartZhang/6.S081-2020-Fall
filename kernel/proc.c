@@ -133,6 +133,10 @@ found:
   memset(&p->context, 0, sizeof(p->context));
   p->context.ra = (uint64)forkret;
   p->context.sp = p->kstack + PGSIZE;
+  for (int i = 0; i < NVMA; i++) {
+    p->vmas[i].used = 0;
+  }
+  p->mmap_start = MMAPSTART;
 
   return p;
 }
@@ -296,6 +300,19 @@ fork(void)
       np->ofile[i] = filedup(p->ofile[i]);
   np->cwd = idup(p->cwd);
 
+  np->mmap_start = p->mmap_start;
+  for (i = 0; i < NVMA; i++) {
+    np->vmas[i].addr = p->vmas[i].addr;
+    np->vmas[i].len = p->vmas[i].len;
+    np->vmas[i].used = p->vmas[i].used;
+    np->vmas[i].flags = p->vmas[i].flags;
+    np->vmas[i].prot = p->vmas[i].prot;
+
+    if(p->vmas[i].used && p->vmas[i].f) {
+      np->vmas[i].f = filedup(p->vmas[i].f);
+    }
+  }
+
   safestrcpy(np->name, p->name, sizeof(p->name));
 
   pid = np->pid;
@@ -350,6 +367,15 @@ exit(int status)
       struct file *f = p->ofile[fd];
       fileclose(f);
       p->ofile[fd] = 0;
+    }
+  }
+
+  struct VMA *v;
+  for (v = p->vmas; v < p->vmas + NVMA; v++) {
+    if(v->used) {
+      if (_sys_munmap(v->addr, v->len) < 0) {
+        panic("exit:munmap");
+      }
     }
   }
 

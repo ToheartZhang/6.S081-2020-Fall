@@ -5,6 +5,11 @@
 #include "riscv.h"
 #include "defs.h"
 #include "fs.h"
+#include "spinlock.h"
+#include "sleeplock.h"
+#include "file.h"
+#include "proc.h"
+#include "fcntl.h"
 
 /*
  * the kernel's page table.
@@ -256,6 +261,43 @@ uvmdealloc(pagetable_t pagetable, uint64 oldsz, uint64 newsz)
   }
 
   return newsz;
+}
+
+int
+mmap_alloc(pagetable_t pagetable, uint64 va)
+{
+  char *mem;
+  struct proc* p = myproc();
+  struct VMA* v;
+  for (v = p->vmas; v < p->vmas + NVMA; v++) {
+    if (v->used && va >= v->addr && va < v->addr + v->len) {
+      break;
+    }
+  }
+  if (v == p->vmas + NVMA) {
+    return -1;
+  }
+  mem = kalloc();
+  if (mem == 0) {
+    return -1;
+  }
+  memset(mem, 0, PGSIZE);
+  begin_op();
+  ilock(v->f->ip);
+  int len;
+  if ((len = readi(v->f->ip, 0, (uint64)mem, va - v->addr, PGSIZE)) < 0) {
+    iunlock(v->f->ip);
+    end_op();
+    return -1;
+  }
+  iunlock(v->f->ip);
+  end_op();
+  int f = PTE_U | (v->prot << 1);
+  if (mappages(pagetable, va, PGSIZE, (uint64)mem, f) != 0) {
+    kfree(mem);
+    return -1;
+  }
+  return 0;
 }
 
 // Recursively free page-table pages.

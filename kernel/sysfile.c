@@ -16,6 +16,9 @@
 #include "file.h"
 #include "fcntl.h"
 
+#define NVMA 16
+#define min(a, b) ((a) < (b) ? (a) : (b))
+
 // Fetch the nth word-sized system call argument as a file descriptor
 // and return both the descriptor and the corresponding struct file.
 static int
@@ -483,4 +486,96 @@ sys_pipe(void)
     return -1;
   }
   return 0;
+}
+
+uint64 
+sys_mmap(void) 
+{
+  int length, prot, flags, fd;
+  struct file* f;
+  if(argint(1, &length) < 0 || argint(2, &prot) < 0
+    || argint(3, &flags) < 0 || argfd(4, &fd, &f) < 0) {
+      return 0xffffffffffffffff;
+  }
+  if (!f->writable && flags == MAP_SHARED && (prot & PROT_WRITE)) {
+    return 0xffffffffffffffff;
+  }
+
+  struct proc* p = myproc();
+  struct VMA* vma;
+  for (vma = p->vmas; vma < p->vmas + NVMA; vma++) {
+    if (!vma->used) {
+      filedup(f);
+      vma->addr = PGROUNDDOWN(p->mmap_start - length);
+      vma->len = length;
+      p->mmap_start = vma->addr;
+
+      vma->used = 1;
+      vma->f = f;
+      vma->prot = prot;
+      vma->flags = flags;
+      vma->offset = 0;
+      return vma->addr;
+    }
+  }
+  return 0xffffffffffffffff;
+}
+
+uint64
+_sys_munmap(uint64 addr, int length)
+{
+  struct VMA* v;
+  struct proc* p = myproc();
+  for (v = p->vmas; v < p->vmas + NVMA; v++) {
+    if (v->used && addr >= v->addr && addr < v->addr + v->len) {
+      break;
+    }
+  }
+  if (v == p->vmas + NVMA) {
+    return -1;
+  }
+  uint64 _addr = addr;
+  uint64 end = addr + length;
+  while (addr < end) {
+    if (walkaddr(p->pagetable, addr)) {
+      if (v->flags == MAP_SHARED && v->f->writable) {
+        // write back
+        begin_op();
+        ilock(v->f->ip);
+        int size = min(end - addr, PGSIZE);
+        if (writei(v->f->ip, 1, addr, addr - v->addr, size) < size) {
+          iunlock(v->f->ip);
+          end_op();
+          return -1;
+        }
+        iunlock(v->f->ip);
+        end_op();
+      }
+      uvmunmap(p->pagetable, addr, 1, 1);
+    }
+    addr += PGSIZE;
+  }
+  //cut
+  if (_addr == v->addr) {
+    v->addr += length;
+  } else if (_addr + length == v->addr + v->len) {
+    v->len -= length;
+  }
+  if (v->len <= 0) {
+    fileundup(v->f);
+    v->used = 0;
+  }
+  return 0;
+}
+
+uint64
+sys_munmap(void)
+{
+  uint64 addr;
+  int length;
+
+  if (argaddr(0, &addr) < 0 || argint(1, &length) < 0) {
+    return -1;
+  }
+  return _sys_munmap(addr, length);
 }
